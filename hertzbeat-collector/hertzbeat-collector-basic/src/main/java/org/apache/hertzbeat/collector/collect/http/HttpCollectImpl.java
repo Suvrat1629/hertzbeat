@@ -242,91 +242,89 @@ public class HttpCollectImpl extends AbstractCollect {
     }
 
     private void parseResponseBySiteMap(String resp, List<String> aliasFields,
-                                        CollectRep.MetricsData.Builder builder) {
-        List<String> siteUrls = new LinkedList<>();
-        boolean isXmlFormat = true;
-        try {
-            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-            // see https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html
-            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            dbf.setXIncludeAware(false);
-            DocumentBuilder db = dbf.newDocumentBuilder();
-            Document document = db.parse(new InputSource(new StringReader(resp)));
-            NodeList urlList = document.getElementsByTagName("url");
-            for (int i = 0; i < urlList.getLength(); i++) {
-                Node urlNode = urlList.item(i);
-                NodeList childNodes = urlNode.getChildNodes();
-                for (int k = 0; k < childNodes.getLength(); k++) {
-                    Node currentNode = childNodes.item(k);
-                    // distinguish between text nodes and element nodes
-                    if (currentNode.getNodeType() == Node.ELEMENT_NODE && "loc".equals(currentNode.getNodeName())) {
-                        // retrieves the value of the loc node
-                        siteUrls.add(currentNode.getFirstChild().getNodeValue());
-                        break;
-                    }
+                                    CollectRep.MetricsData.Builder builder) {
+    List<String> siteUrls = new LinkedList<>();
+    boolean isXmlFormat = true;
+
+    try {
+        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        dbf.setXIncludeAware(false);
+        
+        DocumentBuilder db = dbf.newDocumentBuilder();
+        Document document = db.parse(new InputSource(new StringReader(resp)));
+        NodeList urlList = document.getElementsByTagName("url");
+
+        for (int i = 0; i < urlList.getLength(); i++) {
+            Node urlNode = urlList.item(i);
+            NodeList childNodes = urlNode.getChildNodes();
+            for (int k = 0; k < childNodes.getLength(); k++) {
+                Node currentNode = childNodes.item(k);
+                if (currentNode.getNodeType() == Node.ELEMENT_NODE && "loc".equals(currentNode.getNodeName())) {
+                    siteUrls.add(currentNode.getTextContent());
+                    break;
                 }
+            }
+        }
+    } catch (Exception e) {
+        log.warn(e.getMessage());
+        isXmlFormat = false;
+    }
+
+    if (!isXmlFormat) {
+        try {
+            String[] urls = resp.split("\n");
+            if (IpDomainUtil.isHasSchema(urls[0])) {
+                siteUrls.addAll(Arrays.asList(urls));
             }
         } catch (Exception e) {
-            log.warn(e.getMessage());
-            isXmlFormat = false;
-        }
-        // if XML parsing fails, parse in TXT format
-        if (!isXmlFormat) {
-            try {
-                String[] urls = resp.split("\n");
-                // validate whether the given value is a URL
-                if (IpDomainUtil.isHasSchema(urls[0])) {
-                    siteUrls.addAll(Arrays.asList(urls));
-                }
-            } catch (Exception e) {
-                log.warn(e.getMessage(), e);
-            }
-        }
-        // start looping through each site URL to collect its HTTP status code, response time, and exception information
-        for (String siteUrl : siteUrls) {
-            String errorMsg = "";
-            Integer statusCode = null;
-            long startTime = System.currentTimeMillis();
-            try {
-                HttpGet httpGet = new HttpGet(siteUrl);
-                try (CloseableHttpResponse response = CommonHttpClient.getHttpClient().execute(httpGet)) {
-                    statusCode = response.getStatusLine().getStatusCode();
-                    EntityUtils.consume(response.getEntity());
-                }
-            } catch (ClientProtocolException e1) {
-                if (e1.getCause() != null) {
-                    errorMsg = e1.getCause().getMessage();
-                } else {
-                    errorMsg = e1.getMessage();
-                }
-            } catch (UnknownHostException e2) {
-                errorMsg = "unknown host";
-            } catch (InterruptedIOException | ConnectException | SSLException e3) {
-                errorMsg = "connect error: " + e3.getMessage();
-            } catch (IOException e4) {
-                errorMsg = "io error: " + e4.getMessage();
-            } catch (Exception e) {
-                errorMsg = "error: " + e.getMessage();
-            }
-            long responseTime = System.currentTimeMillis() - startTime;
-            CollectRep.ValueRow.Builder valueRowBuilder = CollectRep.ValueRow.newBuilder();
-            for (String alias : aliasFields) {
-                if (NetworkConstants.URL.equalsIgnoreCase(alias)) {
-                    valueRowBuilder.addColumn(siteUrl);
-                } else if (NetworkConstants.STATUS_CODE.equalsIgnoreCase(alias)) {
-                    valueRowBuilder.addColumn(statusCode == null
-                            ? CommonConstants.NULL_VALUE : String.valueOf(statusCode));
-                } else if (NetworkConstants.RESPONSE_TIME.equalsIgnoreCase(alias)) {
-                    valueRowBuilder.addColumn(String.valueOf(responseTime));
-                } else if (NetworkConstants.ERROR_MSG.equalsIgnoreCase(alias)) {
-                    valueRowBuilder.addColumn(errorMsg);
-                } else {
-                    valueRowBuilder.addColumn(CommonConstants.NULL_VALUE);
-                }
-            }
-            builder.addValueRow(valueRowBuilder.build());
+            log.warn(e.getMessage(), e);
         }
     }
+
+    for (String siteUrl : siteUrls) {
+        String errorMsg = "";
+        Integer statusCode = null;
+        long startTime = System.currentTimeMillis();
+
+        try {
+            HttpGet httpGet = new HttpGet(siteUrl);
+            try (CloseableHttpResponse response = CommonHttpClient.getHttpClient().execute(httpGet)) {
+                statusCode = response.getStatusLine().getStatusCode();
+                EntityUtils.consume(response.getEntity());
+            }
+        } catch (ClientProtocolException e1) {
+            errorMsg = (e1.getCause() != null) ? e1.getCause().getMessage() : e1.getMessage();
+        } catch (UnknownHostException e2) {
+            errorMsg = "unknown host";
+        } catch (InterruptedIOException | ConnectException | SSLException e3) {
+            errorMsg = "connect error: " + e3.getMessage();
+        } catch (IOException e4) {
+            errorMsg = "io error: " + e4.getMessage();
+        } catch (Exception e) {
+            errorMsg = "error: " + e.getMessage();
+        }
+
+        long responseTime = System.currentTimeMillis() - startTime;
+        CollectRep.ValueRow.Builder valueRowBuilder = CollectRep.ValueRow.newBuilder();
+
+        for (String alias : aliasFields) {
+            if (NetworkConstants.URL.equalsIgnoreCase(alias)) {
+                valueRowBuilder.addColumn(siteUrl);
+            } else if (NetworkConstants.STATUS_CODE.equalsIgnoreCase(alias)) {
+                valueRowBuilder.addColumn(statusCode == null ? CommonConstants.NULL_VALUE : String.valueOf(statusCode));
+            } else if (NetworkConstants.RESPONSE_TIME.equalsIgnoreCase(alias)) {
+                valueRowBuilder.addColumn(String.valueOf(responseTime));
+            } else if (NetworkConstants.ERROR_MSG.equalsIgnoreCase(alias)) {
+                valueRowBuilder.addColumn(errorMsg);
+            } else {
+                valueRowBuilder.addColumn(CommonConstants.NULL_VALUE);
+            }
+        }
+        builder.addValueRow(valueRowBuilder.build());
+    }
+}
+
 
     private void parseResponseByXmlPath(String resp, List<String> aliasFields, HttpProtocol http,
                                         CollectRep.MetricsData.Builder builder) {
